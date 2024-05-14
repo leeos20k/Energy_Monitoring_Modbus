@@ -1,0 +1,467 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="Modbus">
+
+    <select id="GetEnergyMasterIPInfoVO" parameterType="Integer" resultType="CamelHashMap">
+        with master_ip_info as
+        (select     m010.master_id,                             	-- master ID
+        m010.master_nm,                             -- Master 명
+        m010.master_ip,                             -- Master IP
+        m010.master_port_no,                      	-- Master Port 번호
+        count(concat(s010.slave_id,s020.seq)) cnt,  -- cnt 개수(기본 *1, 전류 *3)
+        (select	collect_cnt
+        from	tb_s050.tb_s050_cd010 cd010
+        where	cd010.cd_tp = 'SLAVE_TP'
+        and		cd010.org_id = m010.org_id
+        and		cd010.category = '000'
+        and		cd010.lang = 'KOR'
+        and		cd010.cd_v = s010.slave_tp)		slave_tp_cnt,
+        m010.coll_interval,
+        m010.SOCKET_MTH,
+        m010.RECONNECT,
+        m010.TIMEOUT
+        from   tb_s050.tb_s050_master010  m010
+        inner join tb_s050.tb_s050_master020  m020
+        on m020.master_id = m010.master_id
+        inner join tb_s050.tb_s050_slave010  s010
+        on m020.slave_id = s010.slave_id
+        inner join tb_s050.tb_s050_slave020  s020
+        on s020.slave_id = s010.slave_id
+        and    s020.use_flag = 'Y'
+        where  m010.app_tp = '04'
+        and    m010.org_id = #{orgId}
+        group by m010.master_id,
+        m010.master_nm,
+        m010.master_ip,
+        m010.master_port_no,
+        s010.slave_tp,
+        m010.coll_interval,
+        m010.SOCKET_MTH,
+        m010.RECONNECT,
+        m010.TIMEOUT)
+        select master_id,                                     -- master ID
+        master_nm,                                     -- Master 명
+        master_ip,                                     -- Master IP
+        master_port_no,                                -- Master Port 번호
+        sum(cnt * slave_tp_cnt) as slave_cnt,          -- Master 별 slave 조회 건수
+        coll_interval,                                 -- Master 별 조회 term
+        socket_mth,
+        reconnect,
+        timeout
+        from   master_ip_info
+        group by master_id,
+        master_nm,
+        master_ip,
+        master_port_no,
+        coll_interval ;
+    </select>
+
+    <select id="GetEnergySlaveUnitIDInfoVO" parameterType="java.util.Map" resultType="CamelHashMap">
+        select  s010.slave_id,                                     			-- slave_id
+        s010.slave_Nm,
+        s010.slave_tp,                                     			-- slave 구분
+        s010.register,
+        s010.start_num,												-- Slave 읽을 시작값
+        s010.read_reg_cnt  slave_cnt,                               -- slave 읽을 총 수
+        substring(s020.slave_detail_id, 1, 1 )    slave_unit_id,    -- UNIT_ID
+        m020.master_id
+        from    tb_s050.tb_s050_slave010  s010
+        inner join tb_s050.tb_s050_slave020  s020
+        on s010.slave_id = s020.slave_id
+        inner join tb_s050.tb_s050_master020  m020
+        on m020.slave_id = s010.slave_id
+        where   s010.org_id = #{orgId}
+        and     m020.master_id = #{masterId}
+        group by s010.slave_id,
+        s010.slave_tp,
+        substring(s020.slave_detail_id, 1, 1 )
+        order by substring(s020.slave_detail_id, 1, 1 )  ;
+    </select>
+
+    <select id="GetEnergySlaveSeqInfoVO" parameterType="java.util.Map" resultType="CamelHashMap">
+        with   pump_max_tm as (
+        select    p010.slave_id,
+        p010.seq,
+        max(p010.pump_event_tm) as max_pump_event_tm
+        from    tb_s050.tb_s050_pump010   p010
+        where   p010.slave_id =  #{slaveId}
+        and      p010.pump_event_tm >= date_sub(now(), interval 20 MINUTE)
+        group by p010.slave_id,
+        p010.seq),
+        pump_last_value as (
+        select   p010.slave_id,
+        p010.seq,
+        p010.t_value
+        from   pump_max_tm  pmt,
+        tb_s050.tb_s050_pump010   p010
+        where   pmt.slave_id = p010.slave_id
+        and      pmt.seq = p010.seq
+        and      pmt.max_pump_event_tm = p010.pump_event_tm)
+        select   s020.slave_id,               -- slave_id
+        s020.seq,                  -- 순번
+        s020.start_num,               -- 시작번호
+        s020.water_rate,            -- 수분율
+        s010.slave_tp,               -- slave구분
+        (select   collect_cnt
+        from   tb_s050.tb_s050_cd010  as cd010
+        where   cd010.cd_tp = 'SLAVE_TP'
+        and      cd010.org_id = s010.org_id
+        and      cd010.category = '000'
+        and      cd010.lang = 'KOR'
+        and      cd010.cd_v = s010.slave_tp)   collect_cnt,   -- 읽은 건수
+        plv.t_value
+        from   tb_s050.tb_s050_slave010  s010
+        inner join tb_s050.tb_s050_slave020    s020
+        on   s010.slave_id = s020.slave_id
+        inner join pump_last_value  plv
+        on   s020.slave_id = plv.slave_id
+        and   s020.seq = plv.seq
+        where   s010.slave_id =  #{slaveId}  ;
+    </select>
+
+    <insert id="insertPumpVO" parameterType="java.util.Map">
+        INSERT INTO tb_s050.tb_s050_pump010
+        (PUMP_EVENT_TM,
+        SLAVE_ID,
+        SEQ,
+        CREATE_OBJECT_ID,
+        CREATE_TIMESTAMP,
+        CREATE_PROGRAM_ID,
+        LAST_OBJECT_ID,
+        UPDATE_TIMESTAMP,
+        UPDATE_PROGRAM_ID,
+        ORG_ID,
+        R_VALUE,
+        S_VALUE,
+        T_VALUE,
+        L_VALUE,
+        WATER_RATE,
+        CALU_VALUE)
+        VALUES
+        (#{pumpEventTm},          	-- 데이타 읽는 시간
+        #{slaveId},               -- slave_id
+        #{seq},                   	-- slave seq
+        'SYSTEM',
+        sysdate(),
+        'S052030041',
+        'SYSTEM',
+        sysdate(),
+        'S052030041',
+        #{orgId},					-- ORG_ID
+        #{rValue},                 	-- 전류기의 R 값
+        #{sValue},                 	-- 전류기의 S 값
+        #{tValue},                 	-- 전류기의 T 값 (sLAVE_TP = 'O' 의 경우 (R_VALUE, S_VALUE ) 게산값에  수분율을 곱하기 계산하여 저장
+        #{lValue},					-- Level 경우 입력
+        #{waterRate},               -- 수분율
+        #{caluValue});              -- 계산값
+    </insert>
+
+    <select id="GetEnergyTenInfoVO" parameterType="java.util.Map" resultType="CamelHashMap">
+        with prod_vol_maxtm as (
+        select 	max(p010.PUMP_EVENT_TM) PUMP_EVENT_TM,
+        p010.SLAVE_ID ,
+        p010.SEQ ,
+        p010.ORG_ID,
+        s010.slave_tp,
+        ds.to_min
+        from	tb_s050.tb_s050_pump010   p010,
+        tb_s050.tb_s050_slave010  s010,
+        tb_s050.work_day_shift    ds
+        where	p010.pump_event_tm <![CDATA[>=]]> date_sub( concat(date_format(sysdate(), '%Y-%m-%d %H'), ':', ds.to_min, ':00'), interval 10 minute)
+        and		p010.pump_event_tm <![CDATA[<]]> concat(date_format(sysdate(), '%Y-%m-%d %H'), ':', ds.to_min, ':00')
+        and		p010.slave_id = s010.slave_id
+        and		s010.app_tp = '04'
+        and		s010.org_id = #{orgId}			-- 로그인 사용자의 org_id
+        and		s010.slave_tp in ('O', 'V', 'N')
+        and		p010.pump_event_tm >= date_sub(now(), interval 30 MINUTE)
+        group by p010.SLAVE_ID ,
+        p010.SEQ ,
+        p010.ORG_ID,
+        s010.slave_tp ),
+        prod_vol_value	as (
+        select	case when mt.to_min COLLATE utf8mb4_unicode_ci = '00' then concat(date_format(date_add(p010.PUMP_EVENT_TM, interval 1 hour), '%Y-%m-%d %H'), ':', mt.to_min, ':00')
+        else concat(date_format(p010.PUMP_EVENT_TM, '%Y-%m-%d %H'), ':', mt.to_min, ':00')
+        end as PUMP_EVENT_TM,
+        p010.slave_id,
+        p010.seq,
+        p010.ORG_ID,
+        p010.r_value,
+        p010.s_value,
+        p010.t_value,
+        p010.l_value,
+        p010.calu_value
+        from	tb_s050.tb_s050_pump010   p010,
+        prod_vol_maxtm	mt
+        where	p010.slave_id =  mt.slave_id
+        and		p010.seq =  mt.seq
+        and		p010.org_id = mt.org_id
+        and		p010.PUMP_EVENT_TM =  mt.PUMP_EVENT_TM )
+        select	pvv.PUMP_EVENT_TM,
+        pvv.slave_id,
+        pvv.seq,
+        pvv.ORG_ID,
+        pvv.r_value,
+        pvv.s_value,
+        pvv.calu_value	as t_value,
+        pvv.l_value
+        from   prod_vol_value  pvv
+        where   pvv.calu_value > 0 ;
+    </select>
+
+    <select id="GetEnergyDayInfoVO" parameterType="java.util.Map" resultType="CamelHashMap">
+        with prod_vol_maxtm as (
+        select 	max(p010.PUMP_EVENT_TM) PUMP_EVENT_TM,
+        p010.SLAVE_ID ,
+        p010.SEQ ,
+        p010.ORG_ID,
+        s010.slave_tp
+        from	tb_s050.tb_s050_pump010   p010,
+        tb_s050.tb_s050_slave010  s010,
+        tb_s050.work_day_shift    ds
+        where	p010.pump_event_tm <![CDATA[>=]]> concat(date_format(date_sub(sysdate(), interval 1 day), '%Y-%m-%d'), ' 07:00:01')
+        and		p010.pump_event_tm <![CDATA[<=]]> concat(date_format(sysdate(), '%Y-%m-%d'), ' 07:00:00')
+        and		p010.slave_id = s010.slave_id
+        and		s010.app_tp = '04'
+        and		s010.org_id = #{orgId}			-- 로그인 사용자의 org_id
+        and		s010.slave_tp in ('O', 'V', 'N')
+        and		p010.pump_event_tm <![CDATA[>=]]> date_sub(now(), interval 2 day)
+        group by case when cast(date_format( p010.PUMP_EVENT_TM, '%i') as integer) <![CDATA[>=]]> 0 and cast(date_format( p010.PUMP_EVENT_TM, '%i') as integer) <![CDATA[<=]]> 9 then concat(date_format(p010.PUMP_EVENT_TM, '%Y-%m-%d %H:'), '10:00')
+        when cast(date_format( p010.PUMP_EVENT_TM, '%i') as integer) <![CDATA[>=]]> 10 and cast(date_format( p010.PUMP_EVENT_TM, '%i') as integer) <![CDATA[<=]]> 19 then concat(date_format(p010.PUMP_EVENT_TM, '%Y-%m-%d %H:'), '20:00')
+        when cast(date_format( p010.PUMP_EVENT_TM, '%i') as integer) <![CDATA[>=]]> 20 and cast(date_format( p010.PUMP_EVENT_TM, '%i') as integer) <![CDATA[<=]]> 29 then concat(date_format(p010.PUMP_EVENT_TM, '%Y-%m-%d %H:'), '30:00')
+        when cast(date_format( p010.PUMP_EVENT_TM, '%i') as integer) <![CDATA[>=]]> 30 and cast(date_format( p010.PUMP_EVENT_TM, '%i') as integer) <![CDATA[<=]]> 39 then concat(date_format(p010.PUMP_EVENT_TM, '%Y-%m-%d %H:'), '40:00')
+        when cast(date_format( p010.PUMP_EVENT_TM, '%i') as integer) <![CDATA[>=]]> 40 and cast(date_format( p010.PUMP_EVENT_TM, '%i') as integer) <![CDATA[<=]]> 49 then concat(date_format(p010.PUMP_EVENT_TM, '%Y-%m-%d %H:'), '50:00')
+        else concat(date_format(p010.PUMP_EVENT_TM, '%Y-%m-%d %H:'), '00:00')
+        end,
+        p010.SLAVE_ID ,
+        p010.SEQ ,
+        p010.ORG_ID,
+        s010.slave_tp )
+        select	date_format(case when cast(date_format( p010.PUMP_EVENT_TM, '%i') as integer) <![CDATA[>=]]> 0 and cast(date_format( p010.PUMP_EVENT_TM, '%i') as integer) <![CDATA[<=]]> 9 then concat(date_format(p010.PUMP_EVENT_TM, '%Y-%m-%d %H:'), '10:00')
+        when cast(date_format( p010.PUMP_EVENT_TM, '%i') as integer) <![CDATA[>=]]> 10 and cast(date_format( p010.PUMP_EVENT_TM, '%i') as integer) <![CDATA[<=]]> 19 then concat(date_format(p010.PUMP_EVENT_TM, '%Y-%m-%d %H:'), '20:00')
+        when cast(date_format( p010.PUMP_EVENT_TM, '%i') as integer) <![CDATA[>=]]> 20 and cast(date_format( p010.PUMP_EVENT_TM, '%i') as integer) <![CDATA[<=]]> 29 then concat(date_format(p010.PUMP_EVENT_TM, '%Y-%m-%d %H:'), '30:00')
+        when cast(date_format( p010.PUMP_EVENT_TM, '%i') as integer) <![CDATA[>=]]> 30 and cast(date_format( p010.PUMP_EVENT_TM, '%i') as integer) <![CDATA[<=]]> 39 then concat(date_format(p010.PUMP_EVENT_TM, '%Y-%m-%d %H:'), '40:00')
+        when cast(date_format( p010.PUMP_EVENT_TM, '%i') as integer) <![CDATA[>=]]> 40 and cast(date_format( p010.PUMP_EVENT_TM, '%i') as integer) <![CDATA[<=]]> 49 then concat(date_format(p010.PUMP_EVENT_TM, '%Y-%m-%d %H:'), '50:00')
+        else date_add(concat(date_format(p010.PUMP_EVENT_TM, '%Y-%m-%d %H:'), '00:00')  , interval 1 hour)
+        end, '%Y-%m-%d %T') PUMP_EVENT_TM ,
+        p010.slave_id,
+        p010.seq,
+        p010.ORG_ID,
+        p010.r_value,
+        p010.s_value,
+        p010.calu_value as t_value,
+        p010.l_value
+        from	tb_s050.tb_s050_pump010   p010,
+        prod_vol_maxtm	mt
+        where	p010.slave_id =  mt.slave_id
+        and		p010.seq =  mt.seq
+        and		p010.PUMP_EVENT_TM =  mt.PUMP_EVENT_TM
+        ;
+    </select>
+
+    <insert id="insertAggre011VO" parameterType="java.util.Map">
+        INSERT INTO tb_s050.tb_s050_aggre011
+        (EVENT_AGGRE_TEN_MI,
+        SLAVE_ID,
+        SEQ,
+        CREATE_OBJECT_ID,
+        CREATE_TIMESTAMP,
+        CREATE_PROGRAM_ID,
+        LAST_OBJECT_ID,
+        UPDATE_TIMESTAMP,
+        UPDATE_PROGRAM_ID,
+        ORG_ID,
+        R_VALUE,
+        S_VALUE,
+        T_VALUE,
+        L_VALUE)
+        VALUES
+        (#{pumpEventTm},			-- GetEnergeTenInfoVO.EVENT_AGGRE_TEN_MI, GetEnergeDayInfoVO.EVENT_AGGRE_TEN_MI
+        #{slaveId},	     		    -- GetEnergeTenInfoVO.SLAVE_ID,           GetEnergeDayInfoVO.SLAVE_ID
+        #{seq}, 		        	-- GetEnergeTenInfoVO.SEQ,                GetEnergeDayInfoVO.SEQ
+        'SYSTEM',
+        sysdate(),
+        'SYSTEM',
+        'SYSTEM',
+        sysdate(),
+        'SYSTEM',
+        #{orgId},			        -- GetEnergeTenInfoVO.ORG_ID,   GetEnergeDayInfoVO.ORG_ID,
+        #{rValue},			        -- GetEnergeTenInfoVO.R_VALUE,  GetEnergeDayInfoVO.R_VALUE,
+        #{sValue},			        -- GetEnergeTenInfoVO.S_VALUE,  GetEnergeDayInfoVO.S_VALUE,
+        #{tValue}, 		            -- GetEnergeTenInfoVO.T_VALUE,  GetEnergeDayInfoVO.T_VALUE,
+        #{lValue})			        -- GetEnergeTenInfoVO.L_VALUE   GetEnergeDayInfoVO.L_VALUE
+    </insert>
+
+    <delete id="DeleteAggre011VO">
+        delete from tb_s050.tb_s050_aggre011
+        where	EVENT_AGGRE_TEN_MI <![CDATA[>=]]> concat(date_format(date_sub(sysdate(), interval 1 day), '%Y-%m-%d'), ' 07:00:01')
+        and		EVENT_AGGRE_TEN_MI <![CDATA[<=]]> concat(date_format(sysdate(), '%Y-%m-%d'), ' 07:00:00')  ;
+    </delete>
+
+
+
+
+
+
+
+
+
+    <!--    <insert id="CreateEnergyMinCollectVO">-->
+    <!--        INSERT INTO tb_s050.tb_s050_aggre010-->
+    <!--                (EVENT_AGGRE_YYMMDDHHMI,-->
+    <!--                SLAVE_ID,-->
+    <!--                SEQ,-->
+    <!--                CREATE_OBJECT_ID,-->
+    <!--                CREATE_TIMESTAMP,-->
+    <!--                CREATE_PROGRAM_ID,-->
+    <!--                LAST_OBJECT_ID,-->
+    <!--                UPDATE_TIMESTAMP,-->
+    <!--                UPDATE_PROGRAM_ID,-->
+    <!--                ORG_ID,-->
+    <!--                R_VALUE,-->
+    <!--                S_VALUE,-->
+    <!--                T_VALUE,-->
+    <!--                L_VALUE)-->
+    <!--        select	date_format(pump_event_tm, '%Y-%m-%d %H:%i'),-->
+    <!--                p010.slave_id,-->
+    <!--                p010.seq,-->
+    <!--                'SYSTEM',-->
+    <!--                sysdate(),-->
+    <!--                'S052030062',-->
+    <!--                'SYSTEM',-->
+    <!--                sysdate(),-->
+    <!--                'S052030062',-->
+    <!--                1,-->
+    <!--                avg(case when s010.slave_tp in ('V', 'O') then p010.r_value-->
+    <!--                else null-->
+    <!--                end ),-->
+    <!--                avg(case when s010.slave_tp in ('V', 'O') then p010.s_value-->
+    <!--                else null-->
+    <!--                end ),-->
+    <!--                avg(case when s010.slave_tp in ('V', 'O') then p010.t_value-->
+    <!--                else null-->
+    <!--                end ),-->
+    <!--                avg(case when s010.slave_tp in ('V', 'O') then null-->
+    <!--                else p010.l_value-->
+    <!--                end )-->
+    <!--        from 	tb_s050.tb_s050_pump010  p010 ,-->
+    <!--                tb_s050.tb_s050_slave010  s010-->
+    <!--        where	p010.slave_id = s010.slave_id-->
+    <!--        and		s010.org_id = 1         					&#45;&#45; 로그인 Org_id (1)-->
+    <!--        and		s010.app_tp = '04'							&#45;&#45; 로그인 APP 구분('04')-->
+    <!--        and		pump_event_tm <![CDATA[>=]]> concat( date_sub(curdate(), interval 1 day) ,' ', '00:00:01')-->
+    <!--        and		pump_event_tm <![CDATA[<=]]> concat( curdate() ,' ', '00:00:00')-->
+    <!--        group by date_format(pump_event_tm, '%Y-%m-%d %H:%i'),-->
+    <!--        p010.slave_id,-->
+    <!--        p010.seq-->
+    <!--        ;-->
+    <!--    </insert>-->
+
+    <!--    <insert id="CreateEnergyHourCollectVO">-->
+    <!--        INSERT INTO tb_s050.tb_s050_aggre020-->
+    <!--                (EVENT_AGGRE_YYMMDDHH,-->
+    <!--                SLAVE_ID,-->
+    <!--                SEQ,-->
+    <!--                CREATE_OBJECT_ID,-->
+    <!--                CREATE_TIMESTAMP,-->
+    <!--                CREATE_PROGRAM_ID,-->
+    <!--                LAST_OBJECT_ID,-->
+    <!--                UPDATE_TIMESTAMP,-->
+    <!--                UPDATE_PROGRAM_ID,-->
+    <!--                ORG_ID,-->
+    <!--                R_VALUE,-->
+    <!--                S_VALUE,-->
+    <!--                T_VALUE,-->
+    <!--                L_VALUE)-->
+    <!--        select	date_format(EVENT_AGGRE_YYMMDDHHMI, '%Y-%m-%d %H'),-->
+    <!--                a010.slave_id,-->
+    <!--                a010.seq,-->
+    <!--                'SYSTEM',-->
+    <!--                sysdate(),-->
+    <!--                'S052030062',-->
+    <!--                'SYSTEM',-->
+    <!--                sysdate(),-->
+    <!--                'S052030062',-->
+    <!--                1,-->
+    <!--                avg(case when s010.slave_tp in ('V', 'O') then a010.r_value-->
+    <!--                else null-->
+    <!--                end ),-->
+    <!--                avg(case when s010.slave_tp in ('V', 'O') then a010.s_value-->
+    <!--                else null-->
+    <!--                end ),-->
+    <!--                avg(case when s010.slave_tp in ('V', 'O') then a010.t_value-->
+    <!--                else null-->
+    <!--                end ),-->
+    <!--                avg(case when s010.slave_tp in ('V', 'O') then null-->
+    <!--                else a010.l_value-->
+    <!--                end )-->
+    <!--        from	tb_s050.tb_s050_aggre010	a010,-->
+    <!--                tb_s050.tb_s050_slave010 	s010-->
+    <!--        where	a010.slave_id = s010.slave_id-->
+    <!--        and		s010.org_id = 1         					&#45;&#45; 로그인 Org_id (1)-->
+    <!--        and		s010.app_tp = '04'							&#45;&#45; 로그인 APP 구분('04')-->
+    <!--        and		EVENT_AGGRE_YYMMDDHHMI <![CDATA[>=]]> concat( date_sub(curdate(), interval 1 day) ,' ', '00:00')-->
+    <!--        group by 	date_format(EVENT_AGGRE_YYMMDDHHMI, '%Y-%m-%d %H'),-->
+    <!--        a010.slave_id,-->
+    <!--        a010.seq-->
+    <!--        ;-->
+    <!--    </insert>-->
+
+    <!--    <insert id="CreateEnergyDayCollectVO">-->
+    <!--        INSERT INTO tb_s050.tb_s050_aggre030-->
+    <!--                (EVENT_AGGRE_YYMMDD,-->
+    <!--                SLAVE_ID,-->
+    <!--                SEQ,-->
+    <!--                CREATE_OBJECT_ID,-->
+    <!--                CREATE_TIMESTAMP,-->
+    <!--                CREATE_PROGRAM_ID,-->
+    <!--                LAST_OBJECT_ID,-->
+    <!--                UPDATE_TIMESTAMP,-->
+    <!--                UPDATE_PROGRAM_ID,-->
+    <!--                ORG_ID,-->
+    <!--                R_VALUE,-->
+    <!--                S_VALUE,-->
+    <!--                T_VALUE,-->
+    <!--                L_VALUE)-->
+    <!--        select	date_format(a020.EVENT_AGGRE_YYMMDDHH, '%Y-%m-%d'),-->
+    <!--                a020.slave_id,-->
+    <!--                a020.seq,-->
+    <!--                'SYSTEM',-->
+    <!--                sysdate(),-->
+    <!--                'S052030062',-->
+    <!--                'SYSTEM',-->
+    <!--                sysdate(),-->
+    <!--                'S052030062',-->
+    <!--                1,-->
+    <!--                avg(case when s010.slave_tp in ('V', 'O') then a020.r_value-->
+    <!--                else null-->
+    <!--                end ),-->
+    <!--                avg(case when s010.slave_tp in ('V', 'O') then a020.s_value-->
+    <!--                else null-->
+    <!--                end ),-->
+    <!--                avg(case when s010.slave_tp in ('V', 'O') then a020.t_value-->
+    <!--                else null-->
+    <!--                end ),-->
+    <!--                avg(case when s010.slave_tp in ('V', 'O') then null-->
+    <!--                else a020.l_value-->
+    <!--                end )-->
+    <!--        from	tb_s050.tb_s050_aggre020	a020,-->
+    <!--                tb_s050.tb_s050_slave010 	s010-->
+    <!--        where	a020.slave_id = s010.slave_id-->
+    <!--        and		s010.org_id = 1         					&#45;&#45; 로그인 Org_id (1)-->
+    <!--        and		s010.app_tp = '04'							&#45;&#45; 로그인 APP 구분('04')-->
+    <!--        and		a020.EVENT_AGGRE_YYMMDDHH <![CDATA[>=]]> concat( date_sub(curdate(), interval 1 day) ,' ', '00')-->
+    <!--        group by 	date_format(a020.EVENT_AGGRE_YYMMDDHH, '%Y-%m-%d'),-->
+    <!--        a020.slave_id,-->
+    <!--        a020.seq ;-->
+    <!--    </insert>-->
+
+    <!--    <delete id="DeletePump010VO">-->
+    <!--        delete from	tb_s050.tb_s050_pump010-->
+    <!--        where	pump_event_tm <![CDATA[<=]]> date_sub(sysdate(), interval 1 MONTH) ;-->
+    <!--    </delete>-->
+
+    <!--    <delete id="DeleteSlave030VO">-->
+    <!--        delete from	tb_s050.tb_s050_slave030-->
+    <!--        where	ALARM_END_TM <![CDATA[<=]]> date_sub(sysdate(), interval 1 MONTH) ;-->
+    <!--    </delete>-->
+</mapper>
